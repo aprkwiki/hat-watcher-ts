@@ -8,9 +8,15 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:pull": "bash ./scripts/supabase-db-pull.sh",
+    "db:push": "bash ./scripts/supabase-db-push.sh",
+    "watcher:once": "RUN_ONCE=1 tsx src/index.ts",
+    "watcher:dry-run": "RUN_ONCE=1 DRY_RUN=1 tsx src/index.ts",
+    "runtime:checks": "node ./scripts/runtime-checks.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.8",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.5",
     "nodemailer": "^6.9.15"

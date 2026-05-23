@@ -5,9 +5,14 @@ on:
   schedule:
     - cron: "0 * * * *" # hourly UTC
 
+concurrency:
+  group: hat-watcher
+  cancel-in-progress: false
+
 jobs:
   run-watcher:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -15,14 +20,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: hat-watcher-ts/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install
-        working-directory: hat-watcher-ts
         run: npm ci
 
       - name: Run watcher once
-        working-directory: hat-watcher-ts
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -33,4 +36,5 @@ jobs:
           COLLECTION_URL: https://www.grassrootscalifornia.com/collections/new
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: npx tsx src/index.ts --once
+          SUPABASE_TABLE: seen_products
+        run: npm run watcher:once
