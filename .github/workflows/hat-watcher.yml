@@ -1,0 +1,36 @@
+name: Hat Watcher
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *" # hourly UTC
+
+jobs:
+  run-watcher:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: hat-watcher-ts/package-lock.json
+
+      - name: Install
+        working-directory: hat-watcher-ts
+        run: npm ci
+
+      - name: Run watcher once
+        working-directory: hat-watcher-ts
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          COLLECTION_URL: https://www.grassrootscalifornia.com/collections/new
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx src/index.ts --once
