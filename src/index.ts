@@ -1,6 +1,7 @@
 import "dotenv/config";
 import * as cheerio from "cheerio";
 import nodemailer from "nodemailer";
+import { createClient } from "@supabase/supabase-js";
 import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
@@ -18,9 +19,7 @@ const COLLECTION_URL =
   process.env.COLLECTION_URL ??
   "https://www.grassrootscalifornia.com/collections/new";
 const POLL_MINUTES = Number(process.env.POLL_MINUTES ?? "60");
-const STATE_DIR = process.env.STATE_DIR ?? "hat-watcher/state";
 const IMAGE_DIR = process.env.IMAGE_DIR ?? "hat-watcher/images";
-const STATE_FILE = path.join(STATE_DIR, "seen.json");
 
 const SMTP_HOST = process.env.SMTP_HOST ?? "";
 const SMTP_PORT = Number(process.env.SMTP_PORT ?? "587");
@@ -28,6 +27,18 @@ const SMTP_USER = process.env.SMTP_USER ?? "";
 const SMTP_PASS = process.env.SMTP_PASS ?? "";
 const EMAIL_FROM = process.env.EMAIL_FROM ?? "";
 const EMAIL_TO = process.env.EMAIL_TO ?? "";
+
+const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+const SUPABASE_TABLE = process.env.SUPABASE_TABLE ?? "seen_products";
+const RUN_ONCE =
+  (process.env.RUN_ONCE ?? "").toLowerCase() === "true" ||
+  process.env.RUN_ONCE === "1";
+const DRY_RUN =
+  (process.env.DRY_RUN ?? "").toLowerCase() === "true" ||
+  process.env.DRY_RUN === "1";
+
+let supabaseClient: ReturnType<typeof createClient> | null = null;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,6 +51,8 @@ function assertRequiredEnv(): void {
     ["SMTP_PASS", SMTP_PASS],
     ["EMAIL_FROM", EMAIL_FROM],
     ["EMAIL_TO", EMAIL_TO],
+    ["SUPABASE_URL", SUPABASE_URL],
+    ["SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY],
   ]
     .filter(([, v]) => !v)
     .map(([k]) => k);
@@ -49,23 +62,54 @@ function assertRequiredEnv(): void {
   }
 }
 
+function getSupabaseClient(): ReturnType<typeof createClient> {
+  if (!supabaseClient) {
+    supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  }
+  return supabaseClient;
+}
+
+function isMissingTableError(message: string): boolean {
+  return message.includes("Could not find the table");
+}
+
 async function ensureDirs(): Promise<void> {
-  await fs.mkdir(STATE_DIR, { recursive: true });
   await fs.mkdir(IMAGE_DIR, { recursive: true });
 }
 
 async function loadSeen(): Promise<Set<string>> {
-  try {
-    const raw = await fs.readFile(STATE_FILE, "utf8");
-    const parsed = JSON.parse(raw) as string[];
-    return new Set(parsed);
-  } catch {
-    return new Set();
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.from(SUPABASE_TABLE).select("url");
+  if (error) {
+    if (isMissingTableError(error.message)) {
+      console.warn(
+        `Supabase table '${SUPABASE_TABLE}' not found; continuing without persisted seen-state.`
+      );
+      return new Set();
+    }
+    throw new Error(`Supabase loadSeen failed: ${error.message}`);
   }
+  return new Set((data ?? []).map((row: { url: string }) => row.url));
 }
 
-async function saveSeen(seen: Set<string>): Promise<void> {
-  await fs.writeFile(STATE_FILE, JSON.stringify([...seen], null, 2), "utf8");
+async function saveSeenUrls(urls: string[]): Promise<void> {
+  if (urls.length === 0) return;
+  const payload = urls.map((url) => ({ url }));
+  const supabase = getSupabaseClient();
+  const table = supabase.from(SUPABASE_TABLE) as any;
+  const { error } = await table.upsert(payload, {
+    onConflict: "url",
+    ignoreDuplicates: true,
+  });
+  if (error) {
+    if (isMissingTableError(error.message)) {
+      console.warn(
+        `Supabase table '${SUPABASE_TABLE}' not found; skipping seen-state persistence.`
+      );
+      return;
+    }
+    throw new Error(`Supabase saveSeenUrls failed: ${error.message}`);
+  }
 }
 
 function absolutize(base: string, value?: string | null): string | null {
@@ -239,6 +283,8 @@ async function runOnce(): Promise<void> {
     const p = unseen[i];
     if (!p.imageUrl) continue;
 
+    if (DRY_RUN) continue;
+
     try {
       const pathname = new URL(p.imageUrl).pathname;
       const ext = path.extname(pathname) || ".jpg";
@@ -252,10 +298,21 @@ async function runOnce(): Promise<void> {
     }
   }
 
+  if (DRY_RUN) {
+    console.log(
+      `[dry-run] Found ${unseen.length} unseen item(s). Skipping email send and seen-state persistence.`
+    );
+    return;
+  }
+
   await sendDigestEmail(unseen);
 
-  for (const p of unseen) seen.add(p.url);
-  await saveSeen(seen);
+  const newUrls: string[] = [];
+  for (const p of unseen) {
+    seen.add(p.url);
+    newUrls.push(p.url);
+  }
+  await saveSeenUrls(newUrls);
 
   console.log(`Sent digest for ${unseen.length} new hat(s).`);
 }
@@ -263,7 +320,7 @@ async function runOnce(): Promise<void> {
 async function main(): Promise<void> {
   assertRequiredEnv();
   console.log(
-    `Starting hat watcher. Polling every ${POLL_MINUTES} minute(s) from ${COLLECTION_URL}`
+    `Starting hat watcher. Polling every ${POLL_MINUTES} minute(s) from ${COLLECTION_URL}. Mode: ${DRY_RUN ? "dry-run" : "live"}${RUN_ONCE ? ", run-once" : ""}`
   );
 
   // Run immediately, then poll
@@ -273,6 +330,11 @@ async function main(): Promise<void> {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`Run failed: ${msg}`);
+    }
+
+    if (RUN_ONCE) {
+      console.log("Run-once mode complete.");
+      return;
     }
 
     await sleep(POLL_MINUTES * 60 * 1000);
