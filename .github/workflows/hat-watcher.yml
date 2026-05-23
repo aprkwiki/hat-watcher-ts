@@ -36,5 +36,7 @@ jobs:
           COLLECTION_URL: https://www.grassrootscalifornia.com/collections/new
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        run: npx tsx src/index.ts --once
           SUPABASE_TABLE: seen_products
         run: npm run watcher:once
