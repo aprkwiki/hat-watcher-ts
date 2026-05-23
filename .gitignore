@@ -1,0 +1,5 @@
+node_modules
+dist
+.env
+hat-watcher/state
+hat-watcher/images
